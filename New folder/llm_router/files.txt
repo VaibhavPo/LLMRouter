@@ -1,0 +1,5 @@
+llm_router/
+├── __init__.py
+├── models.py      # the model registry: roles -> LM Studio model IDs
+├── router.py       # the routing logic (deterministic)
+└── test_router.py  # sanity tests, no LM Studio server needed

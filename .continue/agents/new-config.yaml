@@ -1,0 +1,48 @@
+# This is your configuration file
+
+name: Local AI Orchestrator
+version: 1.0.0
+schema: v1
+
+# Define which models can be used
+models:
+  - name: Local Orchestrator
+    provider: openai
+    model: local
+    apiBase: http://127.0.0.1:8000/v1
+    apiKey: local
+    roles:
+      - chat
+      - apply
+      - edit
+    defaultCompletionOptions:
+      contextLength: 8000
+      maxTokens: 4000
+
+  # Keep your other models if you want as fallbacks
+  - name: qwen2.5-coder 7b
+    provider: llm-studio
+    model: qwen2.5-coder:7b
+    roles:
+      - apply
+      - autocomplete
+      - chat
+      - edit
+
+  - name: Claude 4 Sonnet
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+    apiKey: ${{ secrets.ANTHROPIC_API_KEY }}
+    roles:
+      - chat
+      - edit
+      - apply
+    defaultCompletionOptions:
+      contextLength: 200000
+      maxTokens: 64000
+    capabilities:
+      - tool_use
+      - image_input
+
+# Set Local Orchestrator as default
+defaultModel: Local Orchestrator

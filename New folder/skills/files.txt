@@ -1,0 +1,5 @@
+skills/
+├── __init__.py
+├── tdd.md              # the procedure text itself — no code
+├── skill_runner.py      # deep module: load skill, run it, evaluate compliance
+└── test_skill_runner.py

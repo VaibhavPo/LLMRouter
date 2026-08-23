@@ -1,0 +1,28 @@
+{
+  "models": [
+    {
+      "title": "Local Orchestrator",
+      "provider": "openai",
+      "model": "local",
+      "apiBase": "http://127.0.0.1:8000/v1",
+      "apiKey": "local"
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Local Orchestrator",
+    "provider": "openai",
+    "model": "local",
+    "apiBase": "http://127.0.0.1:8000/v1",
+    "apiKey": "local"
+  },
+  "slashCommands": [
+    {
+      "name": "context",
+      "description": "Show current project CONTEXT.md",
+      "step": {
+        "type": "shell",
+        "command": "curl -s http://127.0.0.1:8000/contexts"
+      }
+    }
+  ]
+}
