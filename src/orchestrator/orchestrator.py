@@ -19,7 +19,9 @@ from src.bootstrap.bootstrap_runner import BootstrapRunner
 from src.bootstrap.bootstrap_interviewer import BootstrapInterviewer
 from src.core.tool_runtime import ToolRegistry
 from src.core.planner_v2.config import PlannerBuilder
-from src.core.task_plan import PlannerResponse
+from src.core.task_plan import PlannerResponse, TaskPlan
+from src.core.executor.executor import ExecutorBuilder
+from src.core.executor.interfaces import ExecutionResult
 from src.orchestrator.triviality_judge import classify_change
 from src.orchestrator.modify import merge_context
 from src.context.context_store import ContextStore
@@ -90,7 +92,99 @@ class Orchestrator:
         # Initialize planner with builder
         planner_builder = PlannerBuilder()
         self.planner = planner_builder.build_default()
-    
+
+        # Executor wiring — built lazily since it needs tool_runtime,
+        # which may not be set until set_project_root() is called.
+        self._executor_builder: Optional[ExecutorBuilder] = None
+        self._model_provider = None
+        self._skill_factory = None
+
+    def _get_model_provider(self):
+        """
+        Lazily construct the LLMProvider used for THINK/DESIGN steps.
+
+        ASSUMPTION: reuses the same provider family as the planner
+        (src.core.planner_v2.providers.LMStudioProvider). If the planner
+        is wired to a different provider instance, pass model_provider=
+        explicitly to execute_plan() instead of relying on this default.
+        """
+        if self._model_provider is None:
+            from src.core.planner_v2.providers import LMStudioProvider
+            self._model_provider = LMStudioProvider("google/gemma-4-e2b")
+        return self._model_provider
+
+    def _get_skill_factory(self):
+        """
+        Lazily construct the SkillFactory used for SKILL_WORKFLOW steps.
+
+        ASSUMPTION: src.skills.skill_factory.SkillFactory takes no
+        required constructor args. Adjust if it needs the tool_runtime,
+        project_root, or a procedures path.
+        """
+        if self._skill_factory is None:
+            from src.skills.skill_factory import SkillFactory
+            self._skill_factory = SkillFactory()
+        return self._skill_factory
+
+    def execute_plan(
+        self,
+        plan: TaskPlan,
+        model_provider=None,
+        skill_factory=None,
+    ) -> ExecutionResult:
+        """
+        Execute a TaskPlan step-by-step via the Executor.
+
+        Requires tool_runtime to be initialized (project_root set), since
+        ToolStepExecutor/VerifyStepExecutor dispatch through it.
+
+        Args:
+            plan: TaskPlan to execute (typically planner_response.plan
+                  from plan_task())
+            model_provider: Optional LLMProvider override for THINK/DESIGN
+                             steps. Defaults to _get_model_provider().
+            skill_factory: Optional SkillFactory override for
+                            SKILL_WORKFLOW steps. Defaults to
+                            _get_skill_factory().
+
+        Returns:
+            ExecutionResult with completed/failed/skipped steps and
+            per-step outputs.
+
+        Raises:
+            RuntimeError: if tool_runtime is not initialized.
+        """
+        if self.tool_runtime is None:
+            raise RuntimeError(
+                "Tool runtime not initialized. Call set_project_root() first, "
+                "or initialize Orchestrator with project_root parameter."
+            )
+
+        if self._executor_builder is None:
+            self._executor_builder = ExecutorBuilder(self.tool_runtime)
+
+        executor = self._executor_builder.build(
+            model_provider=model_provider or self._get_model_provider(),
+            skill_factory=skill_factory or self._get_skill_factory(),
+        )
+
+        return executor.execute(plan)
+
+    def plan_and_execute(
+        self,
+        user_request: str,
+        project_id: str,
+    ) -> ExecutionResult:
+        """
+        Convenience: plan a task, then execute it immediately.
+
+        For interactive flows where the user should confirm the plan
+        before execution, call plan_task() and execute_plan() separately
+        instead (see cli/main.py's `execute` command).
+        """
+        planner_response = self.plan_task(user_request, project_id)
+        return self.execute_plan(planner_response.plan)
+
     def plan_task(self, user_request: str, project_id: str) -> PlannerResponse:
         """
         Generate a TaskPlan for a user request.

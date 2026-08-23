@@ -26,6 +26,8 @@ def cli():
     print("  list                       - List all projects")
     print("  delete <project_id>        - Delete a project's CONTEXT.md")
     print("  test-bootstrap <path>      - Test cold bootstrap on a codebase")
+    print("  set-root <path>            - Set project root (required before execute)")
+    print("  execute <id> <task>        - Plan and execute a task step-by-step")
     print("=" * 60)
 
     while True:
@@ -138,7 +140,54 @@ def cli():
                     print(f"\n❌ Bootstrap failed")
             except Exception as e:
                 print(f"❌ Error: {e}")
-        
+
+        elif action == "set-root":
+            if len(parts) < 2:
+                print("Usage: set-root <path>")
+                continue
+            try:
+                path_str = parts[1].strip('"').strip("'")
+                orch.set_project_root(path_str)
+                print(f"✓ Project root set to: {orch.project_root}")
+            except ValueError as e:
+                print(f"❌ {e}")
+
+        elif action == "execute":
+            if len(parts) < 2:
+                print("Usage: execute <project_id> <task description>")
+                continue
+
+            # Parse "execute project-id task description here"
+            remainder = parts[1]
+            space_pos = remainder.find(" ")
+            if space_pos == -1:
+                print("Usage: execute <project_id> <task description>")
+                continue
+
+            project_id = remainder[:space_pos]
+            user_request = remainder[space_pos:].strip()
+
+            try:
+                planner_response = orch.plan_task(user_request, project_id)
+                print(f"\n--- Task Plan ---")
+                print(planner_response.summary())
+
+                confirm = input("\nExecute this plan? (yes/no): ").strip().lower()
+                if confirm != "yes":
+                    print("Cancelled.")
+                    continue
+
+                result = orch.execute_plan(planner_response.plan)
+                print(result.summary())
+
+            except RuntimeError as e:
+                print(f"❌ {e}")
+                print("Tip: run 'set-root <path>' first — execution needs a project root.")
+            except ValueError as e:
+                print(f"❌ {e}")
+            except Exception as e:
+                print(f"❌ Execute failed: {e}")
+
         else:
             print(f"Unknown command: {action}")
 

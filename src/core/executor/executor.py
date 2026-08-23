@@ -290,8 +290,8 @@ class ExecutorBuilder:
         Returns:
             Configured Executor instance
         """
-        from step_executor import DefaultStepExecutorFactory
-        from context_manager import PlanExecutionContext
+        from src.core.executor.step_executor import DefaultStepExecutorFactory
+        from src.core.executor.context_manager import PlanExecutionContext
 
         step_executor_factory = DefaultStepExecutorFactory(
             tool_runtime=self.tool_runtime,

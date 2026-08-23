@@ -118,10 +118,17 @@ def _parse_classification(raw_output: str) -> _Classification:
     return _Classification(**json.loads(match.group(0)))
 
 
-def _lmstudio_run(model_id: str, prompt: str) -> str:
+def _lmstudio_run(model_id: str, prompt: str, **kwargs) -> str:
     try:
         model = lms.llm(model_id)
-        result = model.respond(prompt)
+        
+        config = {}
+        if "max_tokens" in kwargs:
+            config["max_tokens"] = kwargs.pop("max_tokens")
+        if "temperature" in kwargs:
+            config["temperature"] = kwargs.pop("temperature")
+            
+        result = model.respond(prompt, config=config if config else None)
         raw = result.content if hasattr(result, "content") else str(result)
         return _strip_leaked_reasoning(raw)
     except Exception as e:
