@@ -177,7 +177,11 @@ def cli():
                     print("Cancelled.")
                     continue
 
-                result = orch.execute_plan(planner_response.plan)
+                result = orch.execute_plan(
+                    planner_response.plan,
+                    task_id=orch._generate_task_id(project_id, user_request),
+                    original_task=user_request,
+                )
                 print(result.summary())
 
             except RuntimeError as e:

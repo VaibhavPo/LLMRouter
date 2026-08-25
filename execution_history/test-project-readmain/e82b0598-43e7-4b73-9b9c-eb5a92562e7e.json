@@ -1,0 +1,24 @@
+{
+  "attempt_id": "e82b0598-43e7-4b73-9b9c-eb5a92562e7e",
+  "task_id": "test-project-readmain",
+  "started_at": 1787686165.3186693,
+  "original_task": "Read main.py before editing it",
+  "initial_plan_id": "97cb15bb-b2f0-4925-9dd2-05807e58fb99",
+  "initial_plan_summary": "Read the target file",
+  "planning_failures": [],
+  "validated_plan_id": null,
+  "completed_steps": [
+    0
+  ],
+  "step_outputs_summary": {
+    "0": "   1 | print('hello')\n"
+  },
+  "execution_failures": [],
+  "checkpoint_decisions": [],
+  "replans": [],
+  "invalidated_assumptions": [],
+  "final_outcome": null,
+  "failure_reason": null,
+  "artifacts": [],
+  "finished_at": null
+}

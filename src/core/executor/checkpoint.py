@@ -107,10 +107,19 @@ Respond with ONLY a JSON object, no other text:
   "invalidated_assumption": "what assumption is now wrong, or empty string"}}
 
 - "valid": the evidence is consistent with the remaining plan; proceed as-is.
-- "invalid": the evidence contradicts an assumption behind a remaining step
-  (e.g. a file is in a different location than assumed); the remaining plan
-  needs repair.
-- "uncertain": you cannot tell from this evidence alone.
+  IMPORTANT: also respond "valid" (not "uncertain") if you are unsure
+  whether an assumption holds, but a remaining plan step already reads,
+  searches, or verifies the thing you're unsure about -- that upcoming
+  step will surface the problem itself if there is one, so the plan does
+  not need to be interrupted now just because you personally can't yet
+  confirm it. Only mark something "uncertain" or "invalid" if NO remaining
+  step will produce that confirming evidence on its own.
+- "invalid": the evidence directly contradicts an assumption behind a
+  remaining step (e.g. a file is confirmed to be in a different location
+  than a remaining step assumes), AND no remaining step would catch this
+  on its own -- the remaining plan needs repair now, not later.
+- "uncertain": you cannot tell from this evidence alone, AND no remaining
+  step is positioned to resolve that uncertainty on its own.
 - "unrecoverable": the evidence shows the task cannot safely continue at all."""
 
         try:

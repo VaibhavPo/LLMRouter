@@ -59,6 +59,7 @@ class Planner:
         user_request: str,
         context_md: str,
         tool_descriptions: dict,
+        prior_failure: str = "",
     ) -> PlannerResponse:
         """
         Generate a TaskPlan for a request.
@@ -67,6 +68,13 @@ class Planner:
             user_request: What the user wants done
             context_md: Project CONTEXT.md
             tool_descriptions: Available tools
+            prior_failure: Optional compact summary of the most relevant
+                past failed attempt at this same task (from
+                ExecutionHistoryStore), so the planner doesn't repeat a
+                mistake it already made. Deliberately NOT the full
+                execution history -- just enough to avoid re-treading the
+                same wrong assumption. Pass "" (default) if there's no
+                relevant prior failure, or history isn't available.
         
         Returns:
             PlannerResponse with TaskPlan
@@ -81,9 +89,22 @@ class Planner:
         try:
             # Step 1: Build prompts
             system_prompt = self.prompts.system_prompt()
-            user_prompt = self.prompts.build_user_prompt(
-                user_request, context_md, tool_descriptions
-            )
+            # Defensive: not every PromptBuilder implementation (e.g. a
+            # test double, or one written before this param existed) is
+            # guaranteed to accept prior_failure. Try the richer call
+            # first; fall back to the original signature rather than
+            # breaking any builder that hasn't been updated.
+            import inspect
+            sig = inspect.signature(self.prompts.build_user_prompt)
+            if "prior_failure" in sig.parameters:
+                user_prompt = self.prompts.build_user_prompt(
+                    user_request, context_md, tool_descriptions,
+                    prior_failure=prior_failure,
+                )
+            else:
+                user_prompt = self.prompts.build_user_prompt(
+                    user_request, context_md, tool_descriptions
+                )
             
             self.logger.debug(f"System prompt: {system_prompt[:100]}...")
             self.logger.debug(f"User prompt: {user_prompt[:100]}...")

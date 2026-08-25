@@ -40,6 +40,7 @@ class OrchestrationResult:
     project_id: str
     used_grilling: bool
     used_gateway: bool
+    used_planning: bool = False
 
 
 @dataclass
@@ -99,20 +100,22 @@ class Orchestrator:
         self._model_provider = None
         self._checkpoint_model_provider = None
         self._skill_factory = None
+        self._history_store = None
         self.history_storage_dir = "execution_history"
 
     def _get_model_provider(self):
         """
         Lazily construct the LLMProvider used for THINK/DESIGN steps.
 
-        ASSUMPTION: reuses the same provider family as the planner
-        (src.core.planner_v2.providers.LMStudioProvider). If the planner
-        is wired to a different provider instance, pass model_provider=
-        explicitly to execute_plan() instead of relying on this default.
+        Resolves via ModelTier.HIGH_REASONING (model_tiers.py) rather
+        than hardcoding a model_id here, so this stays in sync with
+        whatever the Planner itself resolves to instead of drifting
+        into its own separately-hardcoded model.
         """
         if self._model_provider is None:
             from src.core.planner_v2.providers import LMStudioProvider
-            self._model_provider = LMStudioProvider("google/gemma-4-e2b")
+            from src.core.model_tiers import ModelTier, resolve_tier
+            self._model_provider = LMStudioProvider(resolve_tier(ModelTier.HIGH_REASONING))
         return self._model_provider
 
     def _get_skill_factory(self):
@@ -133,24 +136,23 @@ class Orchestrator:
         Lazily construct the LLMProvider used for checkpoint verdicts
         (VALID/UNCERTAIN/INVALID/UNRECOVERABLE).
 
-        ASSUMPTION -- flagged deliberately, do not remove this comment
-        without a real benchmark to back the change: no local model has
-        been benchmarked yet specifically as the cheap/lightweight
-        checkpoint tier (Model Policy, Section 18 of
-        ARCHITECTURE_AFTER_STEP4.md). qwen3-1.7b is the obvious cost
-        candidate but is only proven "usable with caveats" as a plain
-        classifier and has NOT been benchmarked on checkpoint-verdict
-        JSON specifically. Defaulting to the SAME provider used for
-        THINK/DESIGN steps is more expensive than necessary, but it never
-        silently promotes an unbenchmarked model into a new live-router
-        role (see master prompt rule: "do not assign a model a role in
-        the live router without a benchmark result to back it"). Once a
-        cheap tier is benchmarked for this specific task, pass
-        checkpoint_model_provider= explicitly to execute_plan()/
-        plan_and_execute() instead of relying on this default.
+        Resolves via ModelTier.MID_REASONING, falling back to
+        HIGH_REASONING if MID_REASONING has no model assigned yet (see
+        model_tiers.py — no lightweight model has been benchmarked
+        specifically for checkpoint-verdict JSON as of this writing;
+        qwen3-1.7b is only proven "usable with caveats" as a plain
+        classifier, not this task). The fallback is intentionally
+        conservative rather than cheap: it never silently promotes an
+        unbenchmarked model into a live-router role. Once a cheap tier
+        is benchmarked for this specific task, assign it in
+        model_tiers.py's _TIER_REGISTRY[ModelTier.MID_REASONING] and
+        this resolves automatically — no call-site changes needed.
         """
         if self._checkpoint_model_provider is None:
-            self._checkpoint_model_provider = self._get_model_provider()
+            from src.core.planner_v2.providers import LMStudioProvider
+            from src.core.model_tiers import ModelTier, resolve_tier
+            model_id = resolve_tier(ModelTier.MID_REASONING, fallback_tier=ModelTier.HIGH_REASONING)
+            self._checkpoint_model_provider = LMStudioProvider(model_id)
         return self._checkpoint_model_provider
 
     def execute_plan(
@@ -161,6 +163,7 @@ class Orchestrator:
         model_provider=None,
         skill_factory=None,
         checkpoint_model_provider=None,
+        final_validation_model_provider=None,
     ) -> ExecutionResult:
         """
         Execute a TaskPlan via the checkpoint/evidence-based Executor.
@@ -181,7 +184,8 @@ class Orchestrator:
                             task_id in ExecutionHistoryStore.
             model_provider: Optional LLMProvider override for THINK/DESIGN
                              steps and for local/full replanning (strong
-                             tier). Defaults to _get_model_provider().
+                             tier). Defaults to _get_model_provider()
+                             (ModelTier.HIGH_REASONING).
             skill_factory: Optional SkillFactory override for
                             SKILL_WORKFLOW steps. Defaults to
                             _get_skill_factory().
@@ -190,6 +194,24 @@ class Orchestrator:
                              _get_checkpoint_model_provider() -- see that
                              method's docstring for why the default is
                              conservative rather than actually cheap.
+            final_validation_model_provider: Optional LLMProvider override
+                             for final goal validation (strong tier, same
+                             as replanning). Defaults to
+                             _get_model_provider() (ModelTier.HIGH_REASONING).
+
+                             IMPORTANT: previously this was never passed to
+                             ExecutorBuilder.build() at all, which meant
+                             final_validator silently defaulted to
+                             NoopFinalValidator -- every execution declared
+                             "success" the moment all steps completed,
+                             regardless of whether the actual goal was met.
+                             That's now fixed: a real ModelFinalValidator
+                             runs by default. If you actually want the old
+                             Noop behavior (e.g. a fast dev loop where you
+                             don't want an extra LLM call per execution),
+                             pass a NoopFinalValidator-backed provider
+                             explicitly rather than relying on an implicit
+                             default -- silent opt-out was the bug.
 
         Returns:
             ExecutionResult with completed/failed/skipped steps,
@@ -208,10 +230,18 @@ class Orchestrator:
         if self._executor_builder is None:
             self._executor_builder = ExecutorBuilder(self.tool_runtime)
 
+        resolved_model_provider = model_provider or self._get_model_provider()
+
         executor = self._executor_builder.build(
-            model_provider=model_provider or self._get_model_provider(),
+            model_provider=resolved_model_provider,
             skill_factory=skill_factory or self._get_skill_factory(),
             checkpoint_model_provider=checkpoint_model_provider or self._get_checkpoint_model_provider(),
+            # replan_model_provider intentionally omitted: ExecutorBuilder.build()
+            # already defaults it to model_provider, which is HIGH_REASONING --
+            # matching LocalReplanner/FullReplanner's own "strong tier" requirement.
+            final_validation_model_provider=(
+                final_validation_model_provider or resolved_model_provider
+            ),
             history_storage_dir=self.history_storage_dir,
         )
 
@@ -245,6 +275,59 @@ class Orchestrator:
         request_hash = hashlib.sha1(user_request.encode("utf-8")).hexdigest()[:8]
         return f"{project_id}-{request_hash}"
 
+    def _get_history_store(self):
+        """
+        Lazily construct the ExecutionHistoryStore, shared between
+        plan_task() (reads relevant prior failures before planning) and
+        execute_plan() (writes new attempts/failures during execution).
+
+        Both need to point at the same history_storage_dir so a failure
+        written during execute_plan() is actually visible to plan_task()
+        on the next attempt for the same task_id. Returns None if
+        history_storage_dir isn't set (history is fully optional).
+        """
+        if self._history_store is None and self.history_storage_dir:
+            from src.core.executor.execution_history import ExecutionHistoryStore
+            self._history_store = ExecutionHistoryStore(self.history_storage_dir)
+        return self._history_store
+
+    def _get_prior_failure_summary(self, project_id: str, user_request: str, max_chars: int = 800) -> str:
+        """
+        Fetch a compact summary of the most relevant prior failed attempt
+        at this same task, for the planner to avoid repeating -- NOT the
+        full execution history.
+
+        NOTE: this reuses ExecutionHistoryStore.relevant_history_text(),
+        the same method FullReplanner already calls. I haven't seen
+        execution_history.py's implementation, so I can't confirm it
+        already filters down to "just the single most relevant failure"
+        the way a get_last_failed_attempt()-style method would -- it may
+        return more than that. The max_chars truncation below is a
+        defensive cap, not a real fix for that if relevant_history_text()
+        turns out to return multi-attempt detail. If truncated output
+        looks unhelpful in practice (cut off mid-sentence, or missing the
+        actually-relevant failure because it truncated the wrong end),
+        that's the signal a purpose-built method is needed instead --
+        send execution_history.py and this can be tightened properly.
+        """
+        history = self._get_history_store()
+        if history is None:
+            return ""
+
+        task_id = self._generate_task_id(project_id, user_request)
+        try:
+            text = history.relevant_history_text(task_id)
+        except Exception as e:
+            # History being unavailable/corrupt should never block planning.
+            print(f"⚠️  Could not load execution history (continuing without it): {e}")
+            return ""
+
+        if not text:
+            return ""
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n...(truncated)"
+        return text
+
     def plan_task(self, user_request: str, project_id: str) -> PlannerResponse:
         """
         Generate a TaskPlan for a user request.
@@ -261,8 +344,12 @@ class Orchestrator:
             raise ValueError(f"No CONTEXT.md for project {project_id}")
         
         tool_descriptions = self.get_tool_descriptions()
-        
-        return self.planner.plan(user_request, context_md, tool_descriptions)
+
+        prior_failure = self._get_prior_failure_summary(project_id, user_request)
+        if prior_failure:
+            print(f"\nFound a relevant prior failure for this task -- including it in planning context.")
+
+        return self.planner.plan(user_request, context_md, tool_descriptions, prior_failure=prior_failure)
     
     def set_project_root(self, project_root: str | Path):
         """
@@ -315,23 +402,76 @@ class Orchestrator:
                     "read_file(file_path='src/gateway.py')",
                     "read_file(file_path='src/gateway.py', start_line=47, end_line=95)",
                 ],
+                "required_arguments": ["file_path"],
+                "optional_arguments": ["start_line (int)", "end_line (int)"],
                 "context_cost": "50–300 tokens depending on range",
                 "safety_tier": "readonly",
             },
             "list_files": {
                 "description": "List files and directories in a path with metadata",
                 "usage": ["list_files(path='src')"],
+                "required_arguments": [],
+                "optional_arguments": ["path (default '.')", "include_hidden (bool)", "recursive (bool)"],
                 "context_cost": "10–50 tokens",
                 "safety_tier": "readonly",
             },
             "search_code": {
-                "description": "Search for code patterns (regex or plain text)",
+                "description": (
+                    "Search for text or regex patterns in code files. The "
+                    "search term MUST be passed as 'pattern' — not 'query', "
+                    "not 'search_term'. There is no other accepted key for it."
+                ),
                 "usage": [
                     "search_code(pattern='def handle', path='src/core')",
                     "search_code(pattern='TODO', max_results=5)",
                 ],
+                "required_arguments": ["pattern"],
+                "optional_arguments": ["path", "max_results (int)"],
                 "context_cost": "50–200 tokens depending on matches",
                 "safety_tier": "readonly",
+            },
+            "write_file": {
+                "description": (
+                    "Write content to a file, creating it and any parent "
+                    "directories if they don't exist. Overwrites the "
+                    "entire file if it already exists — use edit_file "
+                    "instead if you only want to change part of an "
+                    "existing file."
+                ),
+                "usage": [
+                    "write_file(file_path='src/new_module.py', content='...')",
+                ],
+                "required_arguments": ["file_path", "content (string)"],
+                "context_cost": "varies with content length",
+                "safety_tier": "write_local",
+            },
+            "edit_file": {
+                "description": (
+                    "Edit an EXISTING file via exact string replacement. "
+                    "old_str must be an exact, verbatim substring of the "
+                    "file's current contents (read the file first to copy "
+                    "it precisely) — this is NOT a natural-language "
+                    "instruction like 'add a class here'. If old_str "
+                    "appears more than once in the file, either make it "
+                    "more specific (include surrounding context lines) or "
+                    "pass replace_all=true. Fails if old_str is not found "
+                    "verbatim, or if the file doesn't exist (use "
+                    "write_file for new files)."
+                ),
+                "usage": [
+                    "edit_file(file_path='layout/theme.liquid', "
+                    "old_str='<body>', new_str='<body class=\"floating\">')",
+                    "edit_file(file_path='assets/base.css', "
+                    "old_str='.card { }', new_str='.card { animation: float 3s ease-in-out infinite; }')",
+                ],
+                "required_arguments": [
+                    "file_path",
+                    "old_str (exact substring, non-empty, must appear in file)",
+                    "new_str",
+                ],
+                "optional_arguments": ["replace_all (bool, default false — required if old_str appears more than once)"],
+                "context_cost": "varies with content length",
+                "safety_tier": "write_local",
             },
         }
 
@@ -373,9 +513,65 @@ class Orchestrator:
             if self.context_store.exists(project_id):
                 context_md = self.context_store.load(project_id)
 
-        print(f"\nProcessing request with LLMGateway...")
-        response = self.gateway.handle(user_request, context_md=context_md)
-        used_gateway = True
+        # Decide plan-vs-direct once per request, using the same
+        # classifier LLMGateway already runs internally. This does NOT
+        # call the LLM twice for the direct path: classify_only() here
+        # IS the classification handle() would have run anyway, so we
+        # reuse it below instead of letting handle() re-classify.
+        used_planning = False
+        try:
+            classification = self.gateway.classify_only(user_request)
+        except Exception as e:
+            # Classifier failure: fail toward the cheaper path (direct
+            # gateway), not toward planning. Mirrors modify()'s existing
+            # "classifier error -> default to safer/simpler" pattern,
+            # inverted here since for planning the *safe* default is
+            # "don't invoke the heavier multi-step machinery."
+            print(f"⚠️  Classifier error (skipping planning): {e}")
+            classification = None
+
+        can_plan = (
+            classification is not None
+            and classification.requires_planning
+            and self.tool_runtime is not None
+        )
+
+        if classification is not None and classification.requires_planning and self.tool_runtime is None:
+            print(
+                "\n⚠️  This request looks like it needs multi-step planning, "
+                "but no project_root is set (tool execution unavailable). "
+                "Falling back to a direct response. Run 'set-root <path>' "
+                "first to enable planning for requests like this."
+            )
+
+        if can_plan:
+            print(f"\nRequest classified as needing planning — running Planner + Executor...")
+            try:
+                planner_response = self.plan_task(user_request, project_id)
+                task_id = self._generate_task_id(project_id, user_request)
+                exec_result = self.execute_plan(
+                    planner_response.plan,
+                    task_id=task_id,
+                    original_task=user_request,
+                )
+                response = exec_result.summary() if hasattr(exec_result, "summary") else str(exec_result)
+                used_planning = True
+            except Exception as e:
+                # Planning/execution failed outright: fall back to the
+                # direct gateway path rather than surfacing a raw
+                # exception, same fail-soft posture as the classifier
+                # error handling above.
+                print(f"⚠️  Planning/execution failed ({e}), falling back to direct response...")
+                response = self.gateway.handle(user_request, context_md=context_md)
+        else:
+            print(f"\nProcessing request with LLMGateway...")
+            response = self.gateway.handle(
+                user_request,
+                context_md=context_md,
+                _precomputed_classification=classification,
+            )
+
+        used_gateway = not used_planning
 
         return OrchestrationResult(
             response=response,
@@ -383,6 +579,7 @@ class Orchestrator:
             project_id=project_id,
             used_grilling=used_grilling,
             used_gateway=used_gateway,
+            used_planning=used_planning,
         )
 
     def modify(self, project_id: str, change_request: str) -> ModifyResult:

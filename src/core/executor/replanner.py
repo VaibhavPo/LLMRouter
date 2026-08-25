@@ -189,7 +189,19 @@ Why the goal validation failed: {request.failure_reason or '(not specified)'}
 
 Respond with ONLY a JSON object, no other text:
 {{"task_summary": "...", "steps": [ ... same step schema as before ... ],
-  "relevant_files": [], "skill_name": null or "..."}}"""
+  "relevant_files": [], "skill_name": null or "..."}}
+
+Rules:
+- This is a FULL replacement plan, starting fresh. Your steps will be
+  numbered 0, 1, 2, ... sequentially in the exact order you list them --
+  do not include "step_id" in your JSON, it is assigned automatically by
+  position, starting at 0 (NOT 1).
+- Every "depends_on" value MUST refer to one of these final 0-indexed
+  positions (the index of another step in YOUR "steps" list, in the order
+  you wrote them), never an id from any earlier/previous plan and never
+  1-indexed numbering. A step's depends_on values must all be strictly
+  less than that step's own position in the list.
+- If a step has no dependency, use an empty list: "depends_on": []."""
 
         try:
             raw = self.model_provider.call(

@@ -13,17 +13,19 @@ from .validators import TaskPlanValidator
 from .prompts import DefaultPromptBuilder, DiagnosisPromptBuilder, TDDPromptBuilder
 from .interfaces import Logger
 from src.core.task_plan import TaskPlan, TaskStep, ActionType, ToolInvocation
+from src.core.model_tiers import ModelTier, resolve_tier
+from typing import Optional
 
 
 class ConsoleLogger(Logger):
     """Simple console logger."""
-    
+
     def info(self, message: str):
         print(message)
-    
+
     def debug(self, message: str):
         print(f"[DEBUG] {message}")
-    
+
     def error(self, message: str):
         print(f"[ERROR] {message}")
 
@@ -73,50 +75,71 @@ class TaskPlanFactory:
         return plan
 
 class PlannerBuilder:
-    """Builder for creating configured Planner instances."""
-    
+    """
+    Builder for creating configured Planner instances.
+
+    Planning is a HIGH_REASONING-tier role (per the intended
+    architecture: Planner / Replanner / FinalValidator all need strong
+    reasoning, Checkpoint gets MID_REASONING, deterministic tools need
+    no model at all). build_default/build_diagnosis/build_tdd now
+    resolve HIGH_REASONING via model_tiers.py instead of each
+    independently hardcoding "google/gemma-4-e2b" as a default arg —
+    that duplication was the root cause of "everything routes to
+    gemma" even after gateway.py's _MODEL_REGISTRY was set up with
+    other models, since planner_v2 never consulted it.
+
+    model_id is still accepted as an explicit override for callers that
+    need to pin a specific model (e.g. a benchmark run comparing models
+    for the same role) — passing it bypasses tier resolution entirely.
+    """
+
     def __init__(self):
         self.logger = ConsoleLogger()
         self.factory = TaskPlanFactory()
-    
-    def build_default(self, model_id: str = "google/gemma-4-e2b") -> Planner:
+
+    def _resolve_planning_model_id(self, model_id: Optional[str]) -> str:
+        if model_id is not None:
+            return model_id
+        return resolve_tier(ModelTier.HIGH_REASONING)
+
+    def build_default(self, model_id: str = None) -> Planner:
         """Build a Planner with default settings (LM Studio + default prompts)."""
         return Planner(
-            llm_provider=LMStudioProvider(model_id),
+            llm_provider=LMStudioProvider(self._resolve_planning_model_id(model_id)),
             prompt_builder=DefaultPromptBuilder(),
             parser=JSONParser(),
             validator=TaskPlanValidator(),
             plan_factory=self.factory,
             logger=self.logger,
         )
-    
-    def build_diagnosis(self, model_id: str = "google/gemma-4-e2b") -> Planner:
+
+    def build_diagnosis(self, model_id: str = None) -> Planner:
         """Build a Planner specialized for diagnosis tasks."""
         return Planner(
-            llm_provider=LMStudioProvider(model_id),
+            llm_provider=LMStudioProvider(self._resolve_planning_model_id(model_id)),
             prompt_builder=DiagnosisPromptBuilder(),
             parser=JSONParser(),
             validator=TaskPlanValidator(),
             plan_factory=self.factory,
             logger=self.logger,
         )
-    
-    def build_tdd(self, model_id: str = "google/gemma-4-e2b") -> Planner:
+
+    def build_tdd(self, model_id: str = None) -> Planner:
         """Build a Planner specialized for TDD tasks."""
         return Planner(
-            llm_provider=LMStudioProvider(model_id),
+            llm_provider=LMStudioProvider(self._resolve_planning_model_id(model_id)),
             prompt_builder=TDDPromptBuilder(),
             parser=JSONParser(),
             validator=TaskPlanValidator(),
             plan_factory=self.factory,
             logger=self.logger,
         )
-    
+
     def build_mock(self, mock_response: str = None) -> Planner:
         """Build a Planner with mock LLM (for testing)."""
         if mock_response is None:
             mock_response = '{"task_summary": "mock plan", "steps": [{"step_id": 0, "description": "mock step", "action_type": "think"}]}'
-        
+
         return Planner(
             llm_provider=MockProvider(mock_response),
             prompt_builder=DefaultPromptBuilder(),
@@ -125,7 +148,7 @@ class PlannerBuilder:
             plan_factory=self.factory,
             logger=self.logger,
         )
-    
+
     def build_custom(
         self,
         llm_provider,

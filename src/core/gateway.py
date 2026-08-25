@@ -61,7 +61,13 @@ respond with ONLY a JSON object, no other text, in this exact shape:
  "skill_name": "tdd" | "diagnosis" | "planning" | "code_review" | "domain_modeling" | "unknown",
  "complexity": "low" | "medium" | "high",
  "requires_vision": true | false,
- "requires_reasoning": true | false}
+ "requires_reasoning": true | false,
+ "requires_planning": true | false}
+
+requires_planning means: this request needs multiple ordered steps across
+the codebase (read several files, make coordinated edits, run tests, etc.)
+to complete safely. A single-file trivial edit, a question, or a one-shot
+snippet request does NOT require planning — set it false for those.
 """
 
 
@@ -71,6 +77,7 @@ class _Classification(BaseModel):
     complexity: str
     requires_vision: bool
     requires_reasoning: bool
+    requires_planning: bool = False
 
 
 # --- Private: pure deterministic logic (no I/O, cheap to test) ---------
@@ -148,8 +155,20 @@ class LLMGateway:
     def __init__(self, model_runner: Callable[[str, str], str] = None):
         self._model_runner = model_runner or _lmstudio_run
 
-    def handle(self, raw_request: str, context_md: str = None) -> str:
-        classification = self._classify(raw_request)
+    def handle(
+        self,
+        raw_request: str,
+        context_md: str = None,
+        _precomputed_classification: "_Classification" = None,
+    ) -> str:
+        """
+        `_precomputed_classification` is an internal seam: callers that
+        already ran classify_only() on this exact raw_request (e.g.
+        Orchestrator.run() deciding plan-vs-direct) can pass the result
+        here to avoid paying for a second classifier call. Not part of
+        the public contract — omit it for normal use.
+        """
+        classification = _precomputed_classification or self._classify(raw_request)
 
         if classification.skill_name != SkillType.UNKNOWN:
             print(f"Skill: {classification.skill_name.value.upper()}")

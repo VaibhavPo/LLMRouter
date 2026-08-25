@@ -52,6 +52,7 @@ class PromptBuilder(ABC):
         user_request: str,
         context_md: str,
         tool_descriptions: dict,
+        prior_failure: str = "",
     ) -> str:
         """Build user-facing prompt."""
         pass
