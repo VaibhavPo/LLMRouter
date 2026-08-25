@@ -20,6 +20,14 @@ class ExecutionState:
     skipped_steps: set[int] = field(default_factory=set)
 
     step_outputs: dict[int, str] = field(default_factory=dict)
+    """DEPRECATED as a write target: kept only as a read-compatible alias.
+    Do not write to this directly -- PlanExecutionContext (ContextManager)
+    is the single source of truth for step output text. Executor no longer
+    populates this dict; anything that needs a step's output should take a
+    ContextManager and call get_step_output(), not read execution_state
+    .step_outputs. Retained (always empty, populated on demand via
+    sync_outputs_from()) so external code that already reads it doesn't
+    break outright -- but new code should not rely on it."""
 
     files_changed: list[str] = field(default_factory=list)
     artifacts_produced: list[str] = field(default_factory=list)
@@ -38,9 +46,8 @@ class ExecutionState:
     replan_count: int = 0
     uncertain_resolution_attempts: int = 0
 
-    def record_completed(self, step_id: int, output: str) -> None:
+    def record_completed(self, step_id: int) -> None:
         self.completed_steps.add(step_id)
-        self.step_outputs[step_id] = output
         self.failed_steps.discard(step_id)
 
     def record_failed(self, step_id: int, error: str) -> None:
@@ -48,6 +55,15 @@ class ExecutionState:
 
     def record_skipped(self, step_id: int) -> None:
         self.skipped_steps.add(step_id)
+
+    def sync_outputs_from(self, context) -> None:
+        """
+        Populate step_outputs from a ContextManager for callers that need a
+        one-shot dict view (e.g. building a prompt over "everything gathered
+        so far"). Not called automatically -- PlanExecutionContext remains
+        the live source of truth; this is a snapshot, not a mirror.
+        """
+        self.step_outputs = context.get_outputs_for_steps(sorted(self.completed_steps))
 
     def record_invalidated_assumption(self, assumption: str) -> None:
         self.assumptions_invalidated.append(assumption)

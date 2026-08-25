@@ -29,7 +29,7 @@ class FinalValidationResult:
 
 class FinalValidator(ABC):
     @abstractmethod
-    def validate(self, plan: TaskPlan, execution_state: ExecutionState) -> FinalValidationResult:
+    def validate(self, plan: TaskPlan, execution_state: ExecutionState, context) -> FinalValidationResult:
         ...
 
 
@@ -42,7 +42,7 @@ class NoopFinalValidator(FinalValidator):
     success") is only actually honored once a real validator is wired in.
     """
 
-    def validate(self, plan, execution_state) -> FinalValidationResult:
+    def validate(self, plan, execution_state, context) -> FinalValidationResult:
         return FinalValidationResult(FinalOutcome.PASS, "no final validator configured")
 
 
@@ -53,14 +53,14 @@ class ModelFinalValidator(FinalValidator):
         self.model_provider = model_provider
         self.acceptance_criteria = acceptance_criteria
 
-    def validate(self, plan: TaskPlan, execution_state: ExecutionState) -> FinalValidationResult:
+    def validate(self, plan: TaskPlan, execution_state: ExecutionState, context) -> FinalValidationResult:
         import json
         import re
 
         evidence_lines = []
         for step in plan.steps:
             if step.step_id in execution_state.completed_steps:
-                output = execution_state.step_outputs.get(step.step_id, "")
+                output = context.get_step_output(step.step_id)
                 evidence_lines.append(f"- {step.description}: {output[:300]}")
         evidence = "\n".join(evidence_lines) or "(no completed steps)"
 
@@ -94,7 +94,7 @@ class MockFinalValidator(FinalValidator):
         self.default = default or FinalValidationResult(FinalOutcome.PASS, "default mock: pass")
         self.calls = 0
 
-    def validate(self, plan, execution_state) -> FinalValidationResult:
+    def validate(self, plan, execution_state, context) -> FinalValidationResult:
         self.calls += 1
         if self.results:
             return self.results.pop(0)

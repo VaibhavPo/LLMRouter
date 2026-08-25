@@ -111,6 +111,7 @@ class Executor:
         attempt_id = None
         if self.history is not None:
             attempt_id = self.history.start_attempt(task_id, original_task, plan)
+        self._current_task_id = task_id
 
         state = ExecutionState(plan_id=plan.plan_id)
         current_plan = plan
@@ -129,7 +130,7 @@ class Executor:
 
                 # outcome == "all_steps_complete" -> final goal validation
                 self.logger.info("All steps complete -- running final goal validation")
-                validation = self.final_validator.validate(current_plan, state)
+                validation = self.final_validator.validate(current_plan, state, self.context)
 
                 if validation.outcome == FinalOutcome.PASS:
                     self.logger.info(f"Final validation: PASS ({validation.reasoning})")
@@ -217,7 +218,7 @@ class Executor:
                     return "unrecoverable"
                 continue  # skipped, keep going
 
-            state.record_completed(next_step.step_id, next_step.actual_output or "")
+            state.record_completed(next_step.step_id)
             if self.history is not None and attempt_id is not None:
                 self.history.record_step_completed(attempt_id, next_step.step_id, next_step.actual_output or "")
 
@@ -378,11 +379,11 @@ class Executor:
         self.logger.info("FULL_REPLAN: reconsidering task from the beginning")
         history_text = ""
         if self.history is not None:
-            # relevant_history_text reads from task_id, but Executor.execute()
-            # doesn't retain task_id here by design (state machine shouldn't
-            # need it past attempt start) -- callers who want richer full-
-            # replan context should pass a history-aware full_replanner.
-            history_text = ""
+            # Includes THIS attempt (still active/unfinalized at this point,
+            # so relevant_history_text sees only prior, already-finalized
+            # attempts for the same task_id -- exactly what Invariant 10
+            # wants: awareness of previous attempts, not a self-reference).
+            history_text = self.history.relevant_history_text(self._current_task_id)
 
         request = ReplanRequest(
             original_plan=plan,

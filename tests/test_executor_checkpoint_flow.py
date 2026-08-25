@@ -325,3 +325,42 @@ def test_history_captures_checkpoint_and_replan_decisions():
         assert a.checkpoint_decisions[0]["verdict"] == "invalid"
         assert a.replans[0]["kind"] == "local"
         assert a.invalidated_assumptions == ["location"]
+
+
+# -- full replan receives prior-attempt history (task_id threading) ---------
+
+def test_full_replan_receives_previous_attempt_history():
+    plan = TaskPlan(task_summary="t", steps=[step(0)])
+    se = ScriptedStepExecutor()
+
+    captured_requests = []
+
+    class CapturingReplanner(MockReplanner):
+        def replan(self, request):
+            captured_requests.append(request)
+            self.calls.append(request)
+            return TaskPlan(task_summary="t (retry)", steps=[step(0)], parent_plan_id=request.original_plan.plan_id)
+
+    final_validator = MockFinalValidator(results=[
+        FinalValidationResult(FinalOutcome.FAIL, "goal not met"),
+        FinalValidationResult(FinalOutcome.PASS, "now it is"),
+    ])
+    full_replanner = CapturingReplanner()
+
+    with tempfile.TemporaryDirectory() as d:
+        history = ExecutionHistoryStore(d)
+        # Seed a prior, already-finalized attempt for the same task_id.
+        prior_plan = TaskPlan(task_summary="t", steps=[step(0)])
+        prior_attempt = history.start_attempt("t13", "x", prior_plan)
+        history.record_execution_failure(prior_attempt, 0, "old_str not found in forms.py")
+        history.finalize_attempt(prior_attempt, outcome="failure", failure_reason="edit kept failing")
+
+        executor = build_executor(se, full_replanner=full_replanner,
+                                   final_validator=final_validator, history_store=history)
+        result = executor.execute(plan, task_id="t13", original_task="x")
+
+    assert result.final_outcome == "success"
+    assert len(captured_requests) == 1
+    summary = captured_requests[0].previous_attempts_summary
+    assert "old_str not found in forms.py" in summary
+    assert "edit kept failing" in summary

@@ -37,7 +37,7 @@ def base_plan():
 def make_state(plan, completed):
     state = ExecutionState(plan_id=plan.plan_id)
     for sid in completed:
-        state.record_completed(sid, plan.steps[sid].actual_output)
+        state.record_completed(sid)
     return state
 
 

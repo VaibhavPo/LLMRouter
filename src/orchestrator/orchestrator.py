@@ -97,7 +97,9 @@ class Orchestrator:
         # which may not be set until set_project_root() is called.
         self._executor_builder: Optional[ExecutorBuilder] = None
         self._model_provider = None
+        self._checkpoint_model_provider = None
         self._skill_factory = None
+        self.history_storage_dir = "execution_history"
 
     def _get_model_provider(self):
         """
@@ -126,14 +128,42 @@ class Orchestrator:
             self._skill_factory = SkillFactory()
         return self._skill_factory
 
+    def _get_checkpoint_model_provider(self):
+        """
+        Lazily construct the LLMProvider used for checkpoint verdicts
+        (VALID/UNCERTAIN/INVALID/UNRECOVERABLE).
+
+        ASSUMPTION -- flagged deliberately, do not remove this comment
+        without a real benchmark to back the change: no local model has
+        been benchmarked yet specifically as the cheap/lightweight
+        checkpoint tier (Model Policy, Section 18 of
+        ARCHITECTURE_AFTER_STEP4.md). qwen3-1.7b is the obvious cost
+        candidate but is only proven "usable with caveats" as a plain
+        classifier and has NOT been benchmarked on checkpoint-verdict
+        JSON specifically. Defaulting to the SAME provider used for
+        THINK/DESIGN steps is more expensive than necessary, but it never
+        silently promotes an unbenchmarked model into a new live-router
+        role (see master prompt rule: "do not assign a model a role in
+        the live router without a benchmark result to back it"). Once a
+        cheap tier is benchmarked for this specific task, pass
+        checkpoint_model_provider= explicitly to execute_plan()/
+        plan_and_execute() instead of relying on this default.
+        """
+        if self._checkpoint_model_provider is None:
+            self._checkpoint_model_provider = self._get_model_provider()
+        return self._checkpoint_model_provider
+
     def execute_plan(
         self,
         plan: TaskPlan,
+        task_id: str,
+        original_task: str,
         model_provider=None,
         skill_factory=None,
+        checkpoint_model_provider=None,
     ) -> ExecutionResult:
         """
-        Execute a TaskPlan step-by-step via the Executor.
+        Execute a TaskPlan via the checkpoint/evidence-based Executor.
 
         Requires tool_runtime to be initialized (project_root set), since
         ToolStepExecutor/VerifyStepExecutor dispatch through it.
@@ -141,15 +171,30 @@ class Orchestrator:
         Args:
             plan: TaskPlan to execute (typically planner_response.plan
                   from plan_task())
+            task_id: identifies this *task* across attempts, used for
+                     ExecutionHistoryStore lookup/relevant_history_text on
+                     a future planning call for the same task. Callers
+                     that don't want history persisted at all can still
+                     pass any stable string here -- history simply won't
+                     be read back unless the same task_id recurs.
+            original_task: human-readable goal, persisted alongside
+                            task_id in ExecutionHistoryStore.
             model_provider: Optional LLMProvider override for THINK/DESIGN
-                             steps. Defaults to _get_model_provider().
+                             steps and for local/full replanning (strong
+                             tier). Defaults to _get_model_provider().
             skill_factory: Optional SkillFactory override for
                             SKILL_WORKFLOW steps. Defaults to
                             _get_skill_factory().
+            checkpoint_model_provider: Optional LLMProvider override for
+                             checkpoint verdicts (cheap tier). Defaults to
+                             _get_checkpoint_model_provider() -- see that
+                             method's docstring for why the default is
+                             conservative rather than actually cheap.
 
         Returns:
-            ExecutionResult with completed/failed/skipped steps and
-            per-step outputs.
+            ExecutionResult with completed/failed/skipped steps,
+            final_outcome ("success"/"failure"/"aborted"), and
+            replan_count.
 
         Raises:
             RuntimeError: if tool_runtime is not initialized.
@@ -166,9 +211,11 @@ class Orchestrator:
         executor = self._executor_builder.build(
             model_provider=model_provider or self._get_model_provider(),
             skill_factory=skill_factory or self._get_skill_factory(),
+            checkpoint_model_provider=checkpoint_model_provider or self._get_checkpoint_model_provider(),
+            history_storage_dir=self.history_storage_dir,
         )
 
-        return executor.execute(plan)
+        return executor.execute(plan, task_id=task_id, original_task=original_task)
 
     def plan_and_execute(
         self,
@@ -183,7 +230,20 @@ class Orchestrator:
         instead (see cli/main.py's `execute` command).
         """
         planner_response = self.plan_task(user_request, project_id)
-        return self.execute_plan(planner_response.plan)
+        task_id = self._generate_task_id(project_id, user_request)
+        return self.execute_plan(planner_response.plan, task_id=task_id, original_task=user_request)
+
+    def _generate_task_id(self, project_id: str, user_request: str) -> str:
+        """
+        Scopes ExecutionHistoryStore attempts to (project, specific
+        request). Reusing project_id alone would merge history across
+        unrelated requests within the same project, which would defeat
+        relevant_history_text()'s point -- a retry of request B would see
+        failures from an unrelated earlier request A.
+        """
+        import hashlib
+        request_hash = hashlib.sha1(user_request.encode("utf-8")).hexdigest()[:8]
+        return f"{project_id}-{request_hash}"
 
     def plan_task(self, user_request: str, project_id: str) -> PlannerResponse:
         """
