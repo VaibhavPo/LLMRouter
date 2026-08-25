@@ -69,13 +69,17 @@ class MockTaskPlan:
         completed = set()
 
         while len(order) < len(self.steps):
+            added_any = False
             for step in self.steps:
                 if step.step_id not in completed and all(
                     dep in completed for dep in step.depends_on
                 ):
                     order.append(step.step_id)
                     completed.add(step.step_id)
+                    added_any = True
                     break
+            if not added_any:
+                raise ValueError("Circular dependency detected")
 
         return order
 

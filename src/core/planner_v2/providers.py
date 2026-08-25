@@ -26,7 +26,7 @@ class LMStudioProvider(LLMProvider):
         """Call LM Studio."""
         # Combine system and user prompt for _lmstudio_run
         prompt = f"System: {system_prompt}\nUser Request: {user_prompt}"
-        response = _lmstudio_run(self.model_id, prompt)
+        response = _lmstudio_run(self.model_id, prompt, max_tokens=max_tokens, temperature=temperature)
         return response
 
 

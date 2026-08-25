@@ -150,10 +150,8 @@ class ListFilesTool(Tool):
         self.max_depth = max_depth  # How many levels to show
     
     def validate(self, args: dict) -> tuple[bool, str]:
-        if "path" not in args:
-            return False, "missing 'path' argument"
-        
-        p = Path(args["path"])
+        path_arg = args.get("path", ".")
+        p = Path(path_arg)
         dir_path = p.resolve() if p.is_absolute() else (self.project_root / p).resolve()
         
         try:
@@ -185,7 +183,8 @@ class ListFilesTool(Tool):
             return ToolResult(success=False, output=None, error=error)
         
         try:
-            p = Path(args["path"])
+            path_arg = args.get("path", ".")
+            p = Path(path_arg)
             dir_path = p.resolve() if p.is_absolute() else (self.project_root / p).resolve()
             include_hidden = args.get("include_hidden", False)
             recursive = args.get("recursive", False)
@@ -270,3 +269,136 @@ class ListFilesTool(Tool):
             )
         except Exception as e:
             return ToolResult(success=False, output=None, error=f"List failed: {e}")
+class WriteFileTool(Tool):
+    """Write content to a file, creating it (and parent dirs) if needed."""
+
+    name = "write_file"
+    description = "Write content to a file, creating parent directories if needed"
+    safety_tier = SafetyTier.WRITE_LOCAL
+
+    def __init__(self, project_root: str):
+        self.project_root = Path(project_root).resolve()
+
+    def validate(self, args: dict) -> tuple[bool, str]:
+        if "file_path" not in args:
+            return False, "missing 'file_path' argument"
+        if "content" not in args:
+            return False, "missing 'content' argument"
+        if not isinstance(args["content"], str):
+            return False, "content must be a string"
+
+        p = Path(args["file_path"])
+        file_path = p.resolve() if p.is_absolute() else (self.project_root / p).resolve()
+
+        try:
+            file_path.relative_to(self.project_root)
+        except ValueError:
+            return False, f"file_path must be within {self.project_root}"
+
+        if file_path.exists() and file_path.is_dir():
+            return False, f"file_path is a directory: {file_path}"
+
+        return True, ""
+
+    def execute(self, args: dict) -> ToolResult:
+        valid, error = self.validate(args)
+        if not valid:
+            return ToolResult(success=False, output=None, error=error)
+
+        try:
+            p = Path(args["file_path"])
+            file_path = p.resolve() if p.is_absolute() else (self.project_root / p).resolve()
+            content = args["content"]
+
+            existed_before = file_path.exists()
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding="utf-8")
+
+            return ToolResult(
+                success=True,
+                output=f"Wrote {len(content.encode('utf-8'))} bytes to {file_path.relative_to(self.project_root)}",
+                error=None,
+                metadata={
+                    "file_path": str(file_path.relative_to(self.project_root)),
+                    "bytes_written": len(content.encode("utf-8")),
+                    "created_new": not existed_before,
+                },
+            )
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Write failed: {e}")
+
+
+class EditFileTool(Tool):
+    """Edit an existing file via exact string replacement (find-and-replace)."""
+
+    name = "edit_file"
+    description = "Replace an exact string in an existing file with new content"
+    safety_tier = SafetyTier.WRITE_LOCAL
+
+    def __init__(self, project_root: str):
+        self.project_root = Path(project_root).resolve()
+
+    def validate(self, args: dict) -> tuple[bool, str]:
+        for key in ("file_path", "old_str", "new_str"):
+            if key not in args:
+                return False, f"missing '{key}' argument"
+
+        p = Path(args["file_path"])
+        file_path = p.resolve() if p.is_absolute() else (self.project_root / p).resolve()
+
+        try:
+            file_path.relative_to(self.project_root)
+        except ValueError:
+            return False, f"file_path must be within {self.project_root}"
+
+        if not file_path.exists():
+            return False, f"file does not exist: {file_path}"
+        if not file_path.is_file():
+            return False, f"not a file: {file_path}"
+
+        old_str = args["old_str"]
+        if not isinstance(old_str, str) or old_str == "":
+            return False, "old_str must be a non-empty string"
+
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            return False, f"could not read file to validate: {e}"
+
+        count = content.count(old_str)
+        if count == 0:
+            return False, "old_str not found in file"
+        replace_all = args.get("replace_all", False)
+        if count > 1 and not replace_all:
+            return False, f"old_str appears {count} times; pass replace_all=true or make old_str more specific"
+
+        return True, ""
+
+    def execute(self, args: dict) -> ToolResult:
+        valid, error = self.validate(args)
+        if not valid:
+            return ToolResult(success=False, output=None, error=error)
+
+        try:
+            p = Path(args["file_path"])
+            file_path = p.resolve() if p.is_absolute() else (self.project_root / p).resolve()
+            old_str = args["old_str"]
+            new_str = args["new_str"]
+            replace_all = args.get("replace_all", False)
+
+            content = file_path.read_text(encoding="utf-8")
+            count = content.count(old_str)
+            new_content = content.replace(old_str, new_str) if replace_all else content.replace(old_str, new_str, 1)
+            file_path.write_text(new_content, encoding="utf-8")
+
+            return ToolResult(
+                success=True,
+                output=f"Replaced {count if replace_all else 1} occurrence(s) in {file_path.relative_to(self.project_root)}",
+                error=None,
+                metadata={
+                    "file_path": str(file_path.relative_to(self.project_root)),
+                    "replacements": count if replace_all else 1,
+                },
+            )
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Edit failed: {e}")

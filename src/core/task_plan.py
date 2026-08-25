@@ -6,6 +6,7 @@ A TaskPlan is immutable, validated, and ready for execution.
 Each step is independently verifiable and may use tools.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Any
@@ -87,6 +88,12 @@ class TaskStep:
     estimated_time_seconds: int = 0                # ~how long should this take?
     can_fail: bool = False                         # Is it okay if this fails?
     failure_mode: str = ""                         # "If read fails, use CONTEXT.md instead"
+
+    # Checkpoint eligibility. True for evidence-producing steps whose output
+    # could invalidate assumptions behind later steps (read_file, search_code,
+    # run_tests, ...). The planner sets this -- the executor does not infer it.
+    # Not every step is a checkpoint; only meaningful uncertainty boundaries.
+    can_replan: bool = False
     
     # Execution tracking (filled during execution)
     status: StepStatus = StepStatus.PENDING
@@ -137,6 +144,13 @@ class TaskPlan:
     
     # Context budget: how many tokens should planner use?
     estimated_tokens_used: int = 0
+
+    # Identity for ExecutionHistoryStore. A local replan keeps plan_id the
+    # same lineage (parent_plan_id points at the plan it repaired); a full
+    # replan starts a new plan_id with parent_plan_id pointing at the
+    # attempt that failed final validation.
+    plan_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    parent_plan_id: Optional[str] = None
     
     def __post_init__(self):
         """Validate plan."""
@@ -162,19 +176,76 @@ class TaskPlan:
                 return step
         return None
     
+    def with_replaced_tail(self, first_replaced_step_id: int, new_tail_steps: list[TaskStep]) -> "TaskPlan":
+        """
+        Repair, don't restart. Returns a NEW TaskPlan whose steps are:
+          - steps[0 : first_replaced_step_id], byte-for-byte unchanged
+            (including their COMPLETED status and actual_output), plus
+          - new_tail_steps, exactly as given.
+
+        Preconditions (enforced):
+          - every step before first_replaced_step_id must already be
+            COMPLETED, FAILED-with-can_fail, or SKIPPED -- i.e. actually
+            done. A local replan must never discard in-flight or
+            not-yet-attempted work.
+          - new_tail_steps must already be numbered first_replaced_step_id,
+            first_replaced_step_id+1, ... sequentially (plan_serde's
+            dict_list_to_step_tail produces this).
+
+        This does not mutate self; TaskStep/TaskPlan.__post_init__ on the
+        new plan re-validates dependency ordering for the combined list,
+        so a tail step that (incorrectly) depends on a step later than
+        itself, or on a step_id that doesn't exist in the combined plan,
+        fails loudly here rather than surfacing later during execution.
+        """
+        preserved = self.steps[:first_replaced_step_id]
+
+        for step in preserved:
+            if not step.is_complete():
+                raise ValueError(
+                    f"cannot replace tail starting at {first_replaced_step_id}: "
+                    f"preserved step {step.step_id} is not complete "
+                    f"(status={step.status.value})"
+                )
+
+        expected_ids = list(range(first_replaced_step_id,
+                                   first_replaced_step_id + len(new_tail_steps)))
+        actual_ids = [s.step_id for s in new_tail_steps]
+        if actual_ids != expected_ids:
+            raise ValueError(
+                f"new_tail_steps must be numbered sequentially starting at "
+                f"{first_replaced_step_id}; got {actual_ids}"
+            )
+
+        combined = preserved + new_tail_steps
+
+        return TaskPlan(
+            task_summary=self.task_summary,
+            steps=combined,
+            relevant_files=self.relevant_files,
+            skill_name=self.skill_name,
+            estimated_tokens_used=self.estimated_tokens_used,
+            plan_id=self.plan_id,
+            parent_plan_id=self.plan_id,
+        )
+
     def topological_order(self) -> list[int]:
         """Get execution order respecting dependencies."""
         order = []
         completed = set()
         
         while len(order) < len(self.steps):
-            step = self.get_next_ready_step(completed)
-            if step is None:
+            added_any = False
+            for step in self.steps:
+                if step.step_id not in completed and step.is_ready(completed):
+                    order.append(step.step_id)
+                    completed.add(step.step_id)
+                    added_any = True
+                    break
+            
+            if not added_any:
                 # Circular dependency or unreachable step
                 raise ValueError("Plan has circular dependencies or unreachable steps")
-            
-            order.append(step.step_id)
-            completed.add(step.step_id)
         
         return order
 

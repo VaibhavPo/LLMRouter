@@ -89,6 +89,14 @@ class ExecutionResult:
     context_snapshot: Dict[int, str]
     errors: Dict[int, str]
 
+    # Checkpoint/replan-loop bookkeeping (added for the checkpoint/evidence
+    # architecture -- default values keep old call sites constructing
+    # ExecutionResult without these still working).
+    final_outcome: Optional[str] = None      # "success" | "failure" | "aborted"
+    failure_reason: Optional[str] = None
+    attempt_id: Optional[str] = None
+    replan_count: int = 0
+
     def summary(self) -> str:
         total = len(self.plan.steps)
         passed = len(self.completed_steps)

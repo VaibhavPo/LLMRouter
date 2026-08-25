@@ -8,7 +8,10 @@ Planner depends on interfaces, not implementations.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.task_plan import TaskPlan
 
 
 class LLMProvider(ABC):

@@ -25,6 +25,34 @@ class SkillResult:
     metadata: dict = None  # Skill-specific (e.g., {"phases_found": ["RED", "GREEN"]})
 
 
+class SkillFactory:
+    """Factory object to inject into step executors."""
+    
+    def __init__(self, model_id: str = "google/gemma-4-e2b", model_runner=None):
+        self.model_id = model_id
+        self.model_runner = model_runner
+        
+    def run_skill(
+        self,
+        skill_name: str | SkillType,
+        request: str,
+        context_md: Optional[str] = None
+    ) -> SkillResult:
+        if isinstance(skill_name, str):
+            try:
+                skill_name = SkillType(skill_name.lower())
+            except ValueError:
+                skill_name = SkillType.UNKNOWN
+                
+        return run_skill(
+            skill_name=skill_name,
+            task_description=request,
+            context_md=context_md,
+            model_id=self.model_id,
+            model_runner=self.model_runner,
+        )
+
+
 def _load_procedure(skill_name: str) -> str:
     """Load the .md file for the skill."""
     path = _SKILL_DIR / f"{skill_name.replace('_', '-')}.md"

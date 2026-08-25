@@ -12,11 +12,14 @@ class JSONParser(ResponseParser):
     
     def parse(self, response: str) -> dict:
         """Parse JSON, with cleanup."""
+        response = response.strip()
+        
         # Strip markdown code blocks if present
-        if response.startswith("```json"):
+        if response.lower().startswith("```json"):
             response = response[7:]  # Remove ```json
-        if response.startswith("```"):
+        elif response.startswith("```"):
             response = response[3:]  # Remove ```
+            
         if response.endswith("```"):
             response = response[:-3]  # Remove trailing ```
         
