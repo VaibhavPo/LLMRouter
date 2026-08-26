@@ -11,6 +11,7 @@ Keeping this in one place means all three producers of a TaskPlan build
 objects the same way, with the same error behavior on malformed LLM output.
 """
 
+import re
 from typing import Any, Optional
 
 from src.core.task_plan import (
@@ -25,6 +26,13 @@ from src.core.task_plan import (
 class PlanParseError(ValueError):
     """Raised when LLM JSON cannot be turned into valid TaskStep/TaskPlan objects."""
     pass
+
+
+_JSON_FENCE = re.compile(r"^```[a-zA-Z0-9_+-]*\s*|\s*```$", re.MULTILINE)
+
+def strip_code_fence(text: str) -> str:
+    """Strip markdown code fences from LLM output, regardless of language tag."""
+    return _JSON_FENCE.sub("", text).strip()
 
 
 def dict_to_tool_invocation(d: Optional[dict]) -> Optional[ToolInvocation]:

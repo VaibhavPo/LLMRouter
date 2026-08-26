@@ -87,6 +87,7 @@ class Executor:
         final_validator: Optional[FinalValidator] = None,
         history_store=None,
         config: Optional[ExecutorConfig] = None,
+        tool_descriptions: Optional[dict] = None,
     ):
         self.step_executor_factory = step_executor_factory
         self.context = context_manager
@@ -97,6 +98,7 @@ class Executor:
         self.final_validator = final_validator or NoopFinalValidator()
         self.history = history_store
         self.config = config or ExecutorConfig()
+        self.tool_descriptions = tool_descriptions or {}
 
     # -- public entry point --------------------------------------------------
 
@@ -168,7 +170,7 @@ class Executor:
             failed_steps=set(state.failed_steps),
             skipped_steps=set(state.skipped_steps),
             context_snapshot=self.context.snapshot(),
-            errors={},
+            errors=dict(state.step_errors),
             final_outcome=outcome,
             failure_reason=failure_reason,
             attempt_id=attempt_id,
@@ -351,6 +353,7 @@ class Executor:
             execution_state=state,
             invalidated_assumption=invalidated_assumption or "(unspecified)",
             new_evidence=evidence,
+            tool_descriptions=self.tool_descriptions,
         )
         try:
             new_plan = self.local_replanner.replan(request)
@@ -392,6 +395,7 @@ class Executor:
             new_evidence="",
             failure_reason=failure_reason,
             previous_attempts_summary=history_text,
+            tool_descriptions=self.tool_descriptions,
         )
         try:
             new_plan = self.full_replanner.replan(request)
@@ -433,6 +437,7 @@ class ExecutorBuilder:
         final_validation_model_provider=None,
         history_storage_dir: Optional[str] = None,
         config: Optional[ExecutorConfig] = None,
+        tool_descriptions: Optional[dict] = None,
     ) -> Executor:
         from src.core.executor.step_executor import DefaultStepExecutorFactory
         from src.core.executor.context_manager import PlanExecutionContext
@@ -472,6 +477,7 @@ class ExecutorBuilder:
             final_validator=final_validator,
             history_store=history_store,
             config=config,
+            tool_descriptions=tool_descriptions,
         )
 
 

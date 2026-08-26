@@ -243,6 +243,7 @@ class Orchestrator:
                 final_validation_model_provider or resolved_model_provider
             ),
             history_storage_dir=self.history_storage_dir,
+            tool_descriptions=self.get_tool_descriptions(),
         )
 
         return executor.execute(plan, task_id=task_id, original_task=original_task)

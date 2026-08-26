@@ -18,6 +18,7 @@ from typing import Optional
 from src.core.task_plan import TaskStep, TaskPlan
 from src.core.executor.execution_state import ExecutionState
 from src.core.executor.interfaces import ContextManager
+from src.core.plan_serde import strip_code_fence
 
 
 class CheckpointVerdict(str, Enum):
@@ -61,12 +62,8 @@ class CheckpointEvaluator(ABC):
         ...
 
 
-_JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
-
-
 def _extract_json(text: str) -> dict:
-    cleaned = _JSON_FENCE.sub("", text).strip()
-    return json.loads(cleaned)
+    return json.loads(strip_code_fence(text))
 
 
 class ModelCheckpointEvaluator(CheckpointEvaluator):
@@ -127,12 +124,17 @@ Respond with ONLY a JSON object, no other text:
                 system_prompt="You are a fast, terse plan-checkpoint evaluator. Output only JSON.",
                 user_prompt=prompt,
                 temperature=0.0,
-                max_tokens=200,
+                max_tokens=500,
             )
         except Exception as e:
             raise CheckpointError(f"checkpoint model call failed: {e}")
 
+        if len(raw) > 200 and len(set(raw[-200:])) < 10:
+            raise CheckpointError(f"checkpoint model produced degenerate/repetitive output: {raw[:100]!r}...")
+
         try:
+            if not raw or not raw.strip():
+                raise CheckpointError("checkpoint model returned an empty response (likely truncated reasoning — increase max_tokens)")
             parsed = _extract_json(raw)
             verdict = CheckpointVerdict(parsed["verdict"])
         except (json.JSONDecodeError, KeyError, ValueError) as e:

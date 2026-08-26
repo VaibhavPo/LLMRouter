@@ -5,6 +5,7 @@
 
 import json
 from .interfaces import ResponseParser
+from src.core.plan_serde import strip_code_fence
 
 
 class JSONParser(ResponseParser):
@@ -12,18 +13,7 @@ class JSONParser(ResponseParser):
     
     def parse(self, response: str) -> dict:
         """Parse JSON, with cleanup."""
-        response = response.strip()
-        
-        # Strip markdown code blocks if present
-        if response.lower().startswith("```json"):
-            response = response[7:]  # Remove ```json
-        elif response.startswith("```"):
-            response = response[3:]  # Remove ```
-            
-        if response.endswith("```"):
-            response = response[:-3]  # Remove trailing ```
-        
-        response = response.strip()
+        response = strip_code_fence(response)
         
         try:
             return json.loads(response)

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.core.task_plan import TaskPlan
-from src.core.plan_serde import dict_list_to_step_tail, dict_to_task_plan, PlanParseError
+from src.core.plan_serde import dict_list_to_step_tail, dict_to_task_plan, PlanParseError, strip_code_fence
 from src.core.executor.execution_state import ExecutionState
 
 
@@ -39,6 +39,7 @@ class ReplanRequest:
     new_evidence: str
     failure_reason: Optional[str] = None
     previous_attempts_summary: str = ""
+    tool_descriptions: dict = None
 
 
 class Replanner(ABC):
@@ -47,12 +48,8 @@ class Replanner(ABC):
         ...
 
 
-_JSON_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
-
-
 def _extract_json(text: str) -> dict:
-    cleaned = _JSON_FENCE.sub("", text).strip()
-    return json.loads(cleaned)
+    return json.loads(strip_code_fence(text))
 
 
 def _completed_steps_desc(plan: TaskPlan, execution_state: ExecutionState) -> str:
@@ -87,6 +84,7 @@ class LocalReplanner(Replanner):
             f"  {s.step_id}. {s.description}"
             for s in plan.steps if s.step_id >= first_replaced
         ) or "  (none)"
+        tool_names = ", ".join(request.tool_descriptions.keys()) if request.tool_descriptions else ""
 
         prompt = f"""You are repairing a plan, not restarting it. New evidence has
 invalidated an assumption behind the remaining steps. Produce ONLY the
@@ -108,12 +106,17 @@ Respond with ONLY a JSON object, no other text:
   {{"description": "...", "action_type": "read_file|search_code|list_files|
      analyze_context|think|design|review_findings|write_file|edit_file|
      refactor|run_tests|run_linter|verify|skill_workflow",
-    "tool_invocation": {{"tool_name": "...", "arguments": {{}}}} or null,
+    "tool_invocation": {{"tool_name": "...", "arguments": {{}}}},
     "rationale": "...", "depends_on": [], "expected_output": "...",
     "can_fail": false, "can_replan": false}}
 ]}}
 
 Rules:
+- Steps with action_type in {{think, design, review_findings, analyze_context,
+  skill_workflow}} do NOT use tools: OMIT the "tool_invocation" key entirely
+  for these steps. Do not write "null" or any other placeholder for it.
+- Steps with any other action_type MUST include "tool_invocation" as a JSON
+  object (never the bare word null, never omitted).
 - Your first replacement step WILL BE assigned step_id {first_replaced}, your
   second step_id {first_replaced + 1}, and so on in order -- do not include
   "step_id" in your JSON, but DO use those exact final ids in "depends_on".
@@ -123,7 +126,8 @@ Rules:
   indices (0, 1, 2, ...) for depends_on unless that number is itself one of
   the completed step ids or one of your assigned final ids.
 - Keep the tail as small as necessary to address the invalidated assumption;
-  do not regenerate steps that remain valid."""
+  do not regenerate steps that remain valid.
+- tool_invocation.tool_name MUST be exactly one of: {tool_names} -- never invent a different name."""
 
         try:
             raw = self.model_provider.call(
@@ -172,6 +176,7 @@ class FullReplanner(Replanner):
         plan = request.original_plan
         state = request.execution_state
         completed_desc = _completed_steps_desc(plan, state)
+        tool_names = ", ".join(request.tool_descriptions.keys()) if request.tool_descriptions else ""
 
         prompt = f"""All steps of a plan completed, but the goal was NOT achieved.
 Reconsider the task from the beginning. You may reuse findings below, but
@@ -192,6 +197,11 @@ Respond with ONLY a JSON object, no other text:
   "relevant_files": [], "skill_name": null or "..."}}
 
 Rules:
+- Steps with action_type in {{think, design, review_findings, analyze_context,
+  skill_workflow}} do NOT use tools: OMIT the "tool_invocation" key entirely
+  for these steps. Do not write "null" or any other placeholder for it.
+- Steps with any other action_type MUST include "tool_invocation" as a JSON
+  object (never the bare word null, never omitted).
 - This is a FULL replacement plan, starting fresh. Your steps will be
   numbered 0, 1, 2, ... sequentially in the exact order you list them --
   do not include "step_id" in your JSON, it is assigned automatically by
@@ -201,7 +211,8 @@ Rules:
   you wrote them), never an id from any earlier/previous plan and never
   1-indexed numbering. A step's depends_on values must all be strictly
   less than that step's own position in the list.
-- If a step has no dependency, use an empty list: "depends_on": []."""
+- If a step has no dependency, use an empty list: "depends_on": [].
+- tool_invocation.tool_name MUST be exactly one of: {tool_names} -- never invent a different name."""
 
         try:
             raw = self.model_provider.call(

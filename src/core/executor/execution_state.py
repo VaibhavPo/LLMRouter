@@ -18,6 +18,7 @@ class ExecutionState:
     completed_steps: set[int] = field(default_factory=set)
     failed_steps: set[int] = field(default_factory=set)
     skipped_steps: set[int] = field(default_factory=set)
+    step_errors: dict[int, str] = field(default_factory=dict)
 
     step_outputs: dict[int, str] = field(default_factory=dict)
     """DEPRECATED as a write target: kept only as a read-compatible alias.
@@ -52,6 +53,7 @@ class ExecutionState:
 
     def record_failed(self, step_id: int, error: str) -> None:
         self.failed_steps.add(step_id)
+        self.step_errors[step_id] = error
 
     def record_skipped(self, step_id: int) -> None:
         self.skipped_steps.add(step_id)
