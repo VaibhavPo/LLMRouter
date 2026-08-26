@@ -1,3 +1,5 @@
+from src.core.prompt_rules import EDIT_DISCIPLINE_RULES, TOOL_ARGS_SCHEMA
+
 class DefaultPromptBuilder:
     """
     Planner prompt optimized for small reasoning models.
@@ -688,7 +690,12 @@ CHECK 10:
 Does the complete plan actually achieve the user's goal?
 
 If any answer is NO, fix the plan before returning it.
-
+""" + f"""
+============================================================
+19.5 TOOL ARGUMENT REQUIREMENTS
+============================================================
+{TOOL_ARGS_SCHEMA}
+""" + r"""
 ============================================================
 20. OUTPUT FORMAT
 ============================================================

@@ -94,42 +94,114 @@ class ToolStepExecutor(StepExecutor):
     Handles error checking and output formatting.
     """
 
-    def __init__(self, tool_runtime):
+    def __init__(self, tool_runtime, model_provider=None):
         """
         Initialize with a ToolRegistry.
 
         Args:
             tool_runtime: ToolRegistry instance from src/core/tool_runtime.py
+            model_provider: Optional LLMProvider used only to repair a tool
+                call that failed validation due to wrong/missing argument
+                keys. If None, a missing-argument failure raises immediately
+                (old behavior) instead of attempting repair.
         """
         self.tool_runtime = tool_runtime
+        self.model_provider = model_provider
 
     def execute(self, step, plan, context: ContextManager) -> str:
         """
-        Execute a tool-based step.
+        Execute a tool-based step. On a missing-argument validation failure,
+        attempts one inline repair via model_provider before giving up.
         """
         if not step.tool_invocation:
             raise StepExecutionError(f"Step {step.step_id}: No tool invocation specified")
 
         from src.tools.schemas import ToolRequest
 
+        tool_name = step.tool_invocation.tool_name
         resolved_arguments = _resolve_step_output_placeholders(
             step.tool_invocation.arguments, context
         )
 
-        tool_request = ToolRequest(
-            tool_name=step.tool_invocation.tool_name,
-            arguments=resolved_arguments,
-        )
+        tool_request = ToolRequest(tool_name=tool_name, arguments=resolved_arguments)
 
         try:
             result = self.tool_runtime.execute(tool_request)
         except Exception as e:
             raise StepExecutionError(f"Tool execution failed: {e}")
 
-        if not result.success:
-            raise StepExecutionError(f"Tool failed: {result.error}")
+        if result.success:
+            return result.output
 
-        return result.output
+        if self._is_missing_argument_error(result.error) and self.model_provider is not None:
+            repaired_output = self._attempt_repair(
+                tool_name, resolved_arguments, result.error, step
+            )
+            if repaired_output is not None:
+                return repaired_output
+
+        raise StepExecutionError(f"Tool failed: {result.error}")
+
+    @staticmethod
+    def _is_missing_argument_error(error: Optional[str]) -> bool:
+        if not error:
+            return False
+        lowered = error.lower()
+        return "missing" in lowered and "argument" in lowered
+
+    def _attempt_repair(self, tool_name, original_arguments, error_message, step) -> Optional[str]:
+        """
+        One-shot repair: ask model_provider for corrected argument keys,
+        re-run the tool once. Returns the tool's output string on success,
+        or None if repair failed for any reason (unparseable response,
+        tool still fails, model call error) -- callers fall through to
+        raising the original error.
+        """
+        import json
+        from src.tools.schemas import ToolRequest
+
+        repair_prompt = f"""A tool call failed argument validation.
+
+Tool: {tool_name}
+Arguments given: {json.dumps(original_arguments)}
+Validation error: {error_message}
+
+Return ONLY a corrected JSON object of arguments for this exact tool call,
+using the exact required argument names implied by the error message.
+Keep all argument VALUES the same as given above -- only fix the KEYS.
+No prose, no markdown fences, just the JSON object."""
+
+        try:
+            raw = self.model_provider.call(
+                system_prompt="You repair malformed tool-call arguments. Output only JSON.",
+                user_prompt=repair_prompt,
+                temperature=0.0,
+                max_tokens=500,
+            )
+        except Exception:
+            return None
+
+        try:
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`")
+                if cleaned.lower().startswith("json"):
+                    cleaned = cleaned[4:]
+            repaired_arguments = json.loads(cleaned.strip())
+            if not isinstance(repaired_arguments, dict):
+                return None
+        except Exception:
+            return None
+
+        retry_request = ToolRequest(tool_name=tool_name, arguments=repaired_arguments)
+        try:
+            retry_result = self.tool_runtime.execute(retry_request)
+        except Exception:
+            return None
+
+        if retry_result.success:
+            return retry_result.output
+        return None
 
 # ============================================================================
 # THINK STEP EXECUTOR
@@ -414,7 +486,7 @@ class DefaultStepExecutorFactory:
             ActionType.LIST_FILES,
             ActionType.RUN_TESTS,
         }:
-            return ToolStepExecutor(self.tool_runtime)
+            return ToolStepExecutor(self.tool_runtime, model_provider=self.model_provider)
 
         # Thinking steps
         elif action_type in {ActionType.THINK, ActionType.DESIGN, ActionType.REVIEW_FINDINGS}:

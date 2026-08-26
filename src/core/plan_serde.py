@@ -13,7 +13,7 @@ objects the same way, with the same error behavior on malformed LLM output.
 
 import re
 from typing import Any, Optional
-
+from src.core.prompt_rules import REQUIRED_TOOL_ARGS
 from src.core.task_plan import (
     ActionType,
     StepStatus,
@@ -39,14 +39,21 @@ def dict_to_tool_invocation(d: Optional[dict]) -> Optional[ToolInvocation]:
     if d is None:
         return None
     try:
-        return ToolInvocation(
-            tool_name=d["tool_name"],
-            arguments=d.get("arguments", {}),
-        )
+        tool_name = d["tool_name"]
+        arguments = d.get("arguments", {})
     except KeyError as e:
         raise PlanParseError(f"tool_invocation missing required field: {e}")
 
+    required = REQUIRED_TOOL_ARGS.get(tool_name, [])
+    missing = [key for key in required if not arguments.get(key)]
+    if missing:
+        raise PlanParseError(
+            f"tool_invocation for '{tool_name}' is missing required "
+            f"argument(s) {missing} (got arguments={arguments!r}) -- "
+            f"the model likely dropped these while planning/replanning"
+        )
 
+    return ToolInvocation(tool_name=tool_name, arguments=arguments)
 def dict_to_task_step(d: dict, step_id: int) -> TaskStep:
     """
     Build a TaskStep from a raw dict produced by an LLM.

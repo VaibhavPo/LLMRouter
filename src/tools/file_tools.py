@@ -273,13 +273,33 @@ class WriteFileTool(Tool):
     """Write content to a file, creating it (and parent dirs) if needed."""
 
     name = "write_file"
-    description = "Write content to a file, creating parent directories if needed"
+    description = (
+        "Write content to a file, creating parent directories if needed. "
+        "Example: write_file(file_path='src/new_module.py', content='hello world')"
+    )
     safety_tier = SafetyTier.WRITE_LOCAL
+
+    _KEY_ALIASES = {
+        "content_to_insert": "content",
+        "content_to_add": "content",
+        "text": "content",
+        "path": "file_path",
+    }
 
     def __init__(self, project_root: str):
         self.project_root = Path(project_root).resolve()
 
+    def _normalize_args(self, args: dict) -> dict:
+        """Map common wrong argument keys models emit to the real ones.
+        Never overwrites a correct key that's already present."""
+        normalized = dict(args)
+        for wrong_key, right_key in self._KEY_ALIASES.items():
+            if wrong_key in normalized and right_key not in normalized:
+                normalized[right_key] = normalized.pop(wrong_key)
+        return normalized
+
     def validate(self, args: dict) -> tuple[bool, str]:
+        args = self._normalize_args(args)
         if "file_path" not in args:
             return False, "missing 'file_path' argument"
         if "content" not in args:
@@ -301,6 +321,7 @@ class WriteFileTool(Tool):
         return True, ""
 
     def execute(self, args: dict) -> ToolResult:
+        args = self._normalize_args(args)
         valid, error = self.validate(args)
         if not valid:
             return ToolResult(success=False, output=None, error=error)
@@ -332,13 +353,33 @@ class EditFileTool(Tool):
     """Edit an existing file via exact string replacement (find-and-replace)."""
 
     name = "edit_file"
-    description = "Replace an exact string in an existing file with new content"
+    description = (
+        "Replace an exact string in an existing file with new content. "
+        "Example: edit_file(file_path='src/app.py', old_str='old text', new_str='new text')"
+    )
     safety_tier = SafetyTier.WRITE_LOCAL
+
+    _KEY_ALIASES = {
+        "content_to_insert": "new_str",
+        "content_to_add": "new_str",
+        "new_content": "new_str",
+        "old_content": "old_str",
+        "text": "new_str",
+        "path": "file_path",
+    }
 
     def __init__(self, project_root: str):
         self.project_root = Path(project_root).resolve()
 
+    def _normalize_args(self, args: dict) -> dict:
+        normalized = dict(args)
+        for wrong_key, right_key in self._KEY_ALIASES.items():
+            if wrong_key in normalized and right_key not in normalized:
+                normalized[right_key] = normalized.pop(wrong_key)
+        return normalized
+
     def validate(self, args: dict) -> tuple[bool, str]:
+        args = self._normalize_args(args)
         for key in ("file_path", "old_str", "new_str"):
             if key not in args:
                 return False, f"missing '{key}' argument"
@@ -375,6 +416,7 @@ class EditFileTool(Tool):
         return True, ""
 
     def execute(self, args: dict) -> ToolResult:
+        args = self._normalize_args(args)
         valid, error = self.validate(args)
         if not valid:
             return ToolResult(success=False, output=None, error=error)

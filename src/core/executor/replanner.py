@@ -21,6 +21,26 @@ from typing import Optional
 from src.core.task_plan import TaskPlan
 from src.core.plan_serde import dict_list_to_step_tail, dict_to_task_plan, PlanParseError, strip_code_fence
 from src.core.executor.execution_state import ExecutionState
+from src.core.prompt_rules import PLANNING_SAFETY_RULES
+
+
+_EDIT_DISCIPLINE_RULES = """
+CRITICAL FILE-SAFETY RULES:
+
+- If a file already exists and has been read (via read_file/search_code) in
+  a completed step below, you MUST use edit_file to modify it, never
+  write_file. write_file OVERWRITES THE ENTIRE FILE — using it on an
+  existing file destroys all of its current content except what you put in
+  the new "content" argument.
+- Only use write_file for files that do not exist yet.
+- edit_file requires old_str to be an EXACT substring of the file's actual
+  current content (from a read_file/search_code step's evidence below).
+  Never invent old_str from imagination or from what CONTEXT.md implies
+  the file should look like.
+- If you don't yet know the exact current content of a file you need to
+  edit, add a read_file step first, before any edit_file step for that
+  file.
+"""
 
 
 class ReplanError(Exception):
@@ -91,9 +111,10 @@ invalidated an assumption behind the remaining steps. Produce ONLY the
 replacement for the remaining (not-yet-executed) portion.
 
 Task: {plan.task_summary}
-
+{PLANNING_SAFETY_RULES}
 Completed steps (DO NOT regenerate or repeat these -- they already happened):
 {completed_desc}
+...
 
 Untouched steps this replan may change or replace:
 {untouched_desc}
@@ -184,7 +205,7 @@ you must produce a full, valid replacement plan -- do not assume anything
 was pre-executed by whoever runs this plan.
 
 Task: {plan.task_summary}
-
+{PLANNING_SAFETY_RULES}
 What was tried and found (useful evidence, not necessarily still relevant):
 {completed_desc}
 

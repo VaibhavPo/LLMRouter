@@ -59,7 +59,7 @@ _TIER_REGISTRY: dict[ModelTier, Optional[str]] = {
     # falls back to HIGH_REASONING at the call site until benchmarked,
     # mirroring the existing conservative-but-correct behavior rather
     # than guessing.
-    ModelTier.MID_REASONING: "qwen.qwen3.5-9b",
+    ModelTier.MID_REASONING: "essentialai/rnj-1",
 
     ModelTier.LOW_COST: "qwen/qwen3-1.7b",
 }

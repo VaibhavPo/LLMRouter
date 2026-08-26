@@ -104,7 +104,7 @@ Respond with ONLY JSON: {{"outcome": "pass" | "fail", "reasoning": "..."}}"""
             )
 
         try:
-            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+            cleaned = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
             if not cleaned:
                 raise ValueError("model returned an empty response")
             parsed = json.loads(cleaned)

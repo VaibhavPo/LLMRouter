@@ -1,0 +1,38 @@
+{
+  "attempt_id": "e1f96c8d-c595-40a4-bda5-88b9e9a77e0a",
+  "task_id": "Purelane2-68dbbd88",
+  "started_at": 1787737458.221895,
+  "original_task": "In add.html add buble animation",
+  "initial_plan_id": "0f779aad-10aa-4711-8a47-15ed7a7b1fa1",
+  "initial_plan_summary": "Add bubble animation to add.html by first inspecting its content",
+  "planning_failures": [],
+  "validated_plan_id": null,
+  "completed_steps": [
+    0
+  ],
+  "step_outputs_summary": {
+    "0": "   1 | <html><body>Hello, World!</body></html>"
+  },
+  "execution_failures": [
+    {
+      "timestamp": 1787737485.1577704,
+      "step_id": -1,
+      "error": "full replan failed: full replan produced invalid plan: step missing 'description': {'step_id': 0, 'action_type': 'read_file', 'tool_invocation': {'file_path': 'add.html'}, 'depends_on': []}",
+      "evidence": ""
+    }
+  ],
+  "checkpoint_decisions": [
+    {
+      "timestamp": 1787737463.0725873,
+      "step_id": 0,
+      "verdict": "valid",
+      "reasoning": "The evidence confirms that add.html contains HTML content, which aligns with the initial plan to identify where a bubble animation should be added."
+    }
+  ],
+  "replans": [],
+  "invalidated_assumptions": [],
+  "final_outcome": "aborted",
+  "failure_reason": "full replan failed: full replan produced invalid plan: step missing 'description': {'step_id': 0, 'action_type': 'read_file', 'tool_invocation': {'file_path': 'add.html'}, 'depends_on': []}",
+  "artifacts": [],
+  "finished_at": 1787737485.1611023
+}
