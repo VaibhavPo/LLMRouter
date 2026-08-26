@@ -74,15 +74,50 @@ Evidence from execution:
 
 Respond with ONLY JSON: {{"outcome": "pass" | "fail", "reasoning": "..."}}"""
 
-        raw = self.model_provider.call(
-            system_prompt="You are a strict goal-completion judge. Output only JSON.",
-            user_prompt=prompt,
-            temperature=0.0,
-            max_tokens=300,
-        )
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
-        parsed = json.loads(cleaned)
-        return FinalValidationResult(FinalOutcome(parsed["outcome"]), parsed.get("reasoning", ""))
+        # BUGFIX: this method previously had no error handling at all --
+        # a model call failure, an empty response, or unparseable JSON
+        # (e.g. json.loads("") -> "Expecting value: line 1 column 1
+        # (char 0)") propagated straight up through Executor.execute(),
+        # which has no try/except around final_validator.validate(),
+        # crashing the entire CLI process instead of the run failing
+        # gracefully. Per Invariant 7 ("never declare success solely
+        # because every step returned success"), an errored validator
+        # must NOT be treated as an implicit PASS -- but it also should
+        # never crash the process. Treating it as FAIL is the correct
+        # conservative choice: FAIL triggers FullReplanner (or a plain
+        # reported failure if none is configured / replan limit is hit),
+        # which is exactly the existing, already-tested path for "the
+        # goal wasn't confirmed met." This mirrors how CheckpointError is
+        # already handled in checkpoint.py's evaluate() callers -- never
+        # silently assume the good outcome on evaluator failure.
+        try:
+            raw = self.model_provider.call(
+                system_prompt="You are a strict goal-completion judge. Output only JSON.",
+                user_prompt=prompt,
+                temperature=0.0,
+                max_tokens=300,
+            )
+        except Exception as e:
+            return FinalValidationResult(
+                FinalOutcome.FAIL,
+                f"final validation model call failed, treating as not-yet-confirmed: {e}",
+            )
+
+        try:
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+            if not cleaned:
+                raise ValueError("model returned an empty response")
+            parsed = json.loads(cleaned)
+            outcome = FinalOutcome(parsed["outcome"])
+            reasoning = parsed.get("reasoning", "")
+        except Exception as e:
+            return FinalValidationResult(
+                FinalOutcome.FAIL,
+                f"final validation response was unparseable, treating as "
+                f"not-yet-confirmed ({e}): {raw[:300]!r}",
+            )
+
+        return FinalValidationResult(outcome, reasoning)
 
 
 class MockFinalValidator(FinalValidator):

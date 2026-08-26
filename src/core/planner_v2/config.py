@@ -62,6 +62,18 @@ class TaskPlanFactory:
                 depends_on=depends_on,
                 expected_output=step_json.get("expected_output", ""),
                 estimated_time_seconds=int(step_json.get("estimated_time_seconds", 0)),
+                # BUGFIX: these three were previously never read from
+                # step_json at all, so every step from an INITIAL plan
+                # silently got can_fail=False/can_replan=False regardless
+                # of what the LLM actually specified -- meaning the
+                # checkpoint/local-replan loop could never fire on a
+                # first-pass plan, only on already-replanned tails (which
+                # go through plan_serde.dict_to_task_step, which already
+                # read these correctly). Matches plan_serde.py's field
+                # handling now.
+                can_fail=step_json.get("can_fail", False),
+                failure_mode=step_json.get("failure_mode", ""),
+                can_replan=step_json.get("can_replan", False),
             )
             steps.append(step)
 

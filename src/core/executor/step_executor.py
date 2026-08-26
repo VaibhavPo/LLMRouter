@@ -24,6 +24,17 @@ import re
 
 _STEP_OUTPUT_PATTERN = re.compile(r"\{\{step_output:(\d+)\}\}")
 
+# Sentinel a THINK/DESIGN step is instructed to output verbatim (and
+# nothing else) when it's asked to extract/identify something that isn't
+# actually present. Without this, a step that correctly determines "no
+# such element exists" has no way to say so except in prose -- and if
+# that step's output is later substituted wholesale into another step's
+# tool arguments via {{step_output:N}} (e.g. as edit_file's old_str), the
+# prose gets silently treated as literal content and the tool fails on a
+# confusing "not found in file" error instead of the real, informative
+# reason: the assumption behind this step was wrong.
+_NOT_FOUND_SENTINEL = "NOT_FOUND"
+
 
 def _resolve_step_output_placeholders(arguments: dict, context: ContextManager) -> dict:
     """
@@ -42,13 +53,29 @@ def _resolve_step_output_placeholders(arguments: dict, context: ContextManager) 
             def _replace(match):
                 step_id = int(match.group(1))
                 try:
-                    return context.get_step_output(step_id)
+                    output = context.get_step_output(step_id)
                 except Exception:
                     raise StepExecutionError(
                         f"Argument '{key}' references step_output:{step_id}, "
                         f"but that step has no recorded output (it may not "
                         f"have run yet, or produced nothing — check depends_on)"
                     )
+                # See _NOT_FOUND_SENTINEL above: a step that correctly
+                # determined its target doesn't exist says so via this
+                # exact token, rather than us silently substituting a
+                # paragraph of prose as literal tool content and letting
+                # the downstream tool fail on a confusing generic error.
+                if output.strip() == _NOT_FOUND_SENTINEL:
+                    raise StepExecutionError(
+                        f"Argument '{key}' references step_output:{step_id}, "
+                        f"but that step reported it could not find the "
+                        f"target content ({_NOT_FOUND_SENTINEL}) — the "
+                        f"plan's assumption about what exists in the file "
+                        f"was wrong, not a tool-argument problem. This "
+                        f"step should trigger a checkpoint/replan rather "
+                        f"than proceeding with guessed content."
+                    )
+                return output
             resolved[key] = _STEP_OUTPUT_PATTERN.sub(_replace, value)
         else:
             resolved[key] = value
@@ -143,13 +170,38 @@ class ThinkStepExecutor(StepExecutor):
         # Build prompt incorporating previous step outputs
         prompt = self._build_thinking_prompt(step, context)
 
+        # Whether a LATER step references this step's output via
+        # {{step_output:N}} determines the output contract we need: if
+        # something downstream will substitute this text verbatim into a
+        # tool argument (e.g. edit_file's old_str), we cannot afford prose,
+        # hedging, or markdown code fences around the answer -- any of
+        # those get treated as literal content and break the tool call.
+        is_substitution_target = self._is_referenced_by_later_step(step, plan)
+
+        if is_substitution_target:
+            system_prompt = (
+                "You extract exact literal text for direct substitution into "
+                "another tool call. Output ONLY the raw exact text requested — "
+                "no explanation, no preamble, no markdown code fences, no "
+                "quotation marks around it, nothing before or after it. "
+                f"If the requested content genuinely does not exist anywhere "
+                f"in the given context, output ONLY the exact word "
+                f"{_NOT_FOUND_SENTINEL} and nothing else — do not explain why, "
+                f"do not suggest alternatives, do not apologize. Any output "
+                f"other than the exact literal text or the exact word "
+                f"{_NOT_FOUND_SENTINEL} will be treated as literal content "
+                f"and will break the tool call that consumes it."
+            )
+        else:
+            system_prompt = (
+                "You are a careful reasoner. Think through the problem step-by-step, "
+                "considering the context provided. Be precise and thorough."
+            )
+
         # Call model with reasoning parameters
         try:
             response = self.model_provider.call(
-                system_prompt=(
-                    "You are a careful reasoner. Think through the problem step-by-step, "
-                    "considering the context provided. Be precise and thorough."
-                ),
+                system_prompt=system_prompt,
                 user_prompt=prompt,
                 temperature=0.1,  # Low temp: precise, not creative
                 max_tokens=1024,
@@ -158,6 +210,24 @@ class ThinkStepExecutor(StepExecutor):
             raise StepExecutionError(f"Model call failed: {e}")
 
         return response
+
+    def _is_referenced_by_later_step(self, step, plan) -> bool:
+        """
+        True if any later step's tool_invocation.arguments contains
+        {{step_output:<this step's id>}}, meaning this step's raw output
+        will be substituted verbatim rather than read by a human/another
+        model call.
+        """
+        placeholder = f"{{{{step_output:{step.step_id}}}}}"
+        for other_step in plan.steps:
+            if other_step.step_id <= step.step_id:
+                continue
+            if not other_step.tool_invocation:
+                continue
+            for value in other_step.tool_invocation.arguments.values():
+                if isinstance(value, str) and placeholder in value:
+                    return True
+        return False
 
     def _build_thinking_prompt(self, step, context: ContextManager) -> str:
         """
